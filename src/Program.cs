@@ -1,17 +1,13 @@
 ﻿using System.Runtime.InteropServices;
 
-class TapeReader
+class Program
 {
+    // Constants for IOCTL commands
+    const int MTIOCTOP = 0x6d01;  // IOCTL for tape operations
+    const int MTFSF = 10;         // Forward space file operation
+    const int MTSTATUS = 3;       // Status operation (alternative)
 
-    // Constants for MTIOCTOP
-    const int MTIOCTOP = 0x40086d01;  // IOCTL for tape operations
-    
-    const int MTSTATUS = 3;       // Operation to get status
-
-    // Operation results
-    const int MT_EOF = 0x01;      // File mark detected
-    const int MT_EOT = 0x02;      // End of tape detected
-
+    // Tape operation structure
     [StructLayout(LayoutKind.Sequential)]
     public struct MTCommand
     {
@@ -22,53 +18,51 @@ class TapeReader
     [DllImport("libc.so.6", SetLastError = true)]
     public static extern int ioctl(int fd, int request, ref MTCommand command);
 
-
-
-    static bool IsFileMarkReached(FileStream tapeStream)
+    static void ForwardSpaceFile(FileStream tapeStream, int count)
     {
-        try
+        int fd = tapeStream.SafeFileHandle.DangerousGetHandle().ToInt32();
+        MTCommand cmd = new()
         {
-            // Get the file descriptor
-            int fd = tapeStream.SafeFileHandle.DangerousGetHandle().ToInt32();
+            mt_op = MTFSF, // Forward space file
+            mt_count = count
+        };
 
-            MTCommand cmd = new()
-            {
-                mt_op = MTSTATUS,
-                mt_count = 0
-            };
+        int result = ioctl(fd, MTIOCTOP, ref cmd);
 
-            int result = ioctl(fd, MTIOCTOP, ref cmd);
-
-            if (result < 0)
-            {
-                int error = Marshal.GetLastWin32Error();
-                Console.WriteLine($"Error reading tape status: {error}");
-                Console.WriteLine($"Error message: {new System.ComponentModel.Win32Exception(error).Message}");
-                return false;
-            }
-
-            // Analyze the command results (if your driver/device populates cmd.mt_count)
-            if (cmd.mt_count == MT_EOF)
-            {
-                Console.WriteLine("File mark detected.");
-                return true;
-            }
-            else if (cmd.mt_count == MT_EOT)
-            {
-                Console.WriteLine("End of tape detected.");
-                return false;
-            }
-
-            Console.WriteLine("No file mark or end of tape detected.");
-            return false;
+        if (result < 0)
+        {
+            int error = Marshal.GetLastWin32Error();
+            Console.WriteLine($"Error skipping file mark: {error}");
+            Console.WriteLine($"Error message: {new System.ComponentModel.Win32Exception(error).Message}");
         }
-        catch (Exception ex)
+        else
         {
-            Console.WriteLine($"Exception while checking tape status: {ex.Message}");
-            return false;
+            Console.WriteLine($"Skipped {count} file mark(s).");
         }
     }
 
+    static bool ReadFromTape(FileStream tapeStream, byte[] buffer, out int bytesRead)
+    {
+        try
+        {
+            bytesRead = tapeStream.Read(buffer, 0, buffer.Length);
+
+            if (bytesRead == 0)
+            {
+                Console.WriteLine("File mark detected.");
+                return false; // Indicates a file mark was reached
+            }
+
+            Console.WriteLine($"Read {bytesRead} bytes...");
+            return true;
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine($"I/O error occurred: {ex.Message}");
+            bytesRead = 0;
+            return false;
+        }
+    }
 
     static void Main(string[] args)
     {
@@ -79,11 +73,7 @@ class TapeReader
 
         try
         {
-            // Open the tape device for reading
             using FileStream tapeStream = new(tapeDevice, FileMode.Open, FileAccess.Read);
-
-
-            IsFileMarkReached(tapeStream);
 
             byte[] buffer = new byte[bufferSize];
             int bytesRead;
@@ -92,25 +82,23 @@ class TapeReader
 
             while (true)
             {
-
-                // Read data from the tape device
-                while ((bytesRead = tapeStream.Read(buffer, 0, buffer.Length)) > 0)
+                while (ReadFromTape(tapeStream, buffer, out bytesRead))
                 {
-                    // Convert the buffer to a string for demonstration purposes
-                    // If the tape data is binary, handle it accordingly
-                    string data = BitConverter.ToString(buffer, 0, bytesRead);
-
-                    Console.WriteLine($"Read {bytesRead} bytes...");                 
+                    // Process data if needed
                 }
 
-                Console.WriteLine("File mark detected.");
-
-                // if (!IsFileMarkReached(tapeStream))
-                // {
-                //     break;
-                // }
+                // If we reach here, it's because of a file mark or an error
+                if (bytesRead == 0) 
+                {
+                    // Handle the file mark and skip to the next file
+                    ForwardSpaceFile(tapeStream, 1);
+                }
+                else
+                {
+                    // End of tape or an error
+                    break;
+                }
             }
-
 
             Console.WriteLine("Finished reading from tape device.");
         }
